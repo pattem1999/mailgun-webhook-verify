@@ -1,0 +1,153 @@
+================================================================================
+MAILGUN WEBHOOK + CLOUDFLARE WORKER — FINAL APPROACH AND STEPS
+================================================================================
+
+GOAL
+----
+Mailgun POSTs webhooks to your HTTPS URL. Cloudflare must NOT block them (403).
+A Worker verifies Mailgun authenticity using HMAC-SHA256:
+  message  = timestamp + token   (concatenated, no space or separator)
+  key      = Mailgun "HTTP webhook signing key" for that sending domain
+  compare  = hex HMAC-SHA256 to field "signature"
+
+WAF/firewall rules cannot do this HMAC (they do not have your secret). The Worker
+(or your backend) must verify using MAILGUN_SIGNING_KEY.
+
+FILES IN THIS FOLDER (KEEP)
+---------------------------
+  src/index.js          Worker code (verify signature, return JSON on success)
+  wrangler.toml         Worker name, compatibility_date, optional route to your zone
+  package.json          wrangler devDependency + scripts (only if you use CLI)
+  scripts/local-sign.js Optional: generate a valid signed POST for curl testing
+  .dev.vars.example     Template — copy to .dev.vars locally (never commit .dev.vars)
+  .gitignore            Ignores node_modules, .wrangler, .dev.vars
+
+SECRETS
+-------
+  Never commit the signing key. Never paste it in public chat or screenshots.
+  Production: Cloudflare Worker encrypted variable MAILGUN_SIGNING_KEY
+  Local only:  file .dev.vars with line MAILGUN_SIGNING_KEY=your_key
+
+================================================================================
+PATH A — DEPLOY WITH WRANGLER (when npm/yarn can reach registry.npmjs.org)
+================================================================================
+
+Prerequisites: Node.js, Cloudflare account, zone DNS on Cloudflare if using custom host.
+
+1) Install dependencies
+   cd E:\project\symbio\sprint34\MailGunCallBacks\cf-mailgun-webhook-test
+   npm install
+   (or: yarn install)
+
+   If you get ETIMEDOUT to registry.npmjs.org: fix proxy/VPN/firewall or use PATH B.
+
+2) Authenticate Wrangler (pick ONE)
+
+   Your error "Failed to fetch auth token" / ETIMEDOUT means Node cannot reach Cloudflare’s
+   OAuth/API servers (same class of problem as npm ETIMEDOUT). Browsers often work because
+   they use the system/corporate proxy; Node does not unless you set it.
+
+   Option 2a — API TOKEN (recommended when "wrangler login" fails)
+   - In the browser: https://dash.cloudflare.com → your profile (top right) →
+     My Profile → API Tokens → Create Token.
+   - Use template "Edit Cloudflare Workers" OR Custom token with at least:
+     Account: Workers Scripts — Edit; Workers Tail — Read (add KV permissions only if you use KV).
+     If wrangler.toml uses "routes" on a zone: Zone — Zone — Read for that zone.
+   - Create token, copy it once (starts with long random string).
+   - PowerShell (current session only — do not paste token into git or chat):
+       $env:CLOUDFLARE_API_TOKEN = "paste_token_here"
+   - Test:
+       npx wrangler whoami
+   - If whoami works, skip OAuth entirely. Deploy with step 7.
+
+   Option 2b — OAuth (only if your network allows Node outbound HTTPS)
+       npx wrangler login
+
+   Option 2c — Corporate proxy for Node (ask IT for URL; example below)
+       $env:HTTPS_PROXY = "http://USER:PASS@proxy.company.com:8080"
+       $env:HTTP_PROXY  = "http://USER:PASS@proxy.company.com:8080"
+   Then retry Option 2a (whoami) or 2b.
+
+   If "npx wrangler whoami" still ETIMEDOUT: your PC cannot reach Cloudflare API from Node.
+   Use PATH B (dashboard only) for Worker code and secrets.
+
+3) Set the signing key on the deployed Worker (required for deploy; .dev.vars is NOT uploaded)
+   npx wrangler secret put MAILGUN_SIGNING_KEY
+   Paste the Mailgun HTTP webhook signing key when prompted.
+
+4) Local testing only (optional)
+   Copy .dev.vars.example to .dev.vars and set MAILGUN_SIGNING_KEY=...
+   npx wrangler dev
+   POST test body from scripts/local-sign.js to the URL Wrangler prints.
+
+5) DNS for custom hostname (example: mailgun-hook.devmcatech.dpdns.org)
+   EITHER: Workers & Pages → your Worker → Settings → Custom domains → Add hostname
+           (Cloudflare often creates DNS for you)
+   OR:     DNS → CNAME  Name: mailgun-hook  Target: your apex  Proxy: ON
+
+6) wrangler.toml routes
+   Edit "pattern" and "zone_name" to match YOUR subdomain and Cloudflare zone.
+   Comment out the entire "routes = [...]" block if you only use workers.dev URL.
+
+7) Deploy
+   npx wrangler deploy
+   Use the printed https://mailgun-webhook-verify.<account>.workers.dev URL
+   and/or your custom domain from step 5.
+
+8) Mailgun
+   Sending → Domain → Webhooks → URL = https://your-host/ (HTTPS)
+   Signing key in step 3 MUST be for that same Mailgun domain.
+
+9) If Mailgun still gets 403 from Cloudflare
+   Security → WAF → Custom rule: for that hostname + POST, Skip / allow automated POSTs
+   as needed (bot fight can block server-to-server POSTs).
+
+================================================================================
+PATH B — NO npm/yarn (network blocks registry.npmjs.org — use Cloudflare UI only)
+================================================================================
+
+1) dash.cloudflare.com → Workers & Pages → Create → Create Worker.
+
+2) Name it (e.g. mailgun-webhook-verify) → Deploy → Edit code.
+
+3) Replace editor contents with the full contents of: src/index.js
+   Save and deploy.
+
+4) Settings → Variables → Add variable → Encrypt:
+   Name: MAILGUN_SIGNING_KEY
+   Value: Mailgun HTTP webhook signing key for the domain sending webhooks.
+
+5) Settings → Triggers / Custom domains → Add:
+   mailgun-hook.YOURZONE.com (and fix DNS: CNAME proxied to apex if needed).
+
+6) Mailgun webhook URL = https://mailgun-hook.YOURZONE.com/
+
+7) Test: browser GET the URL → JSON ok. Real Mailgun event → 200 in Mailgun logs.
+
+================================================================================
+OPTIONAL: SIGNED POST TEST (PATH A with Node)
+================================================================================
+
+   set MAILGUN_SIGNING_KEY=your_key
+   node scripts\local-sign.js
+   curl.exe -X POST -H "Content-Type: application/x-www-form-urlencoded" ^
+     --data "PASTE_BODY_FROM_SCRIPT" "https://YOUR_WORKER_URL/"
+
+   Expect HTTP 200 and "verified": true.
+
+================================================================================
+PRODUCTION NOTES (FOR CLIENT)
+================================================================================
+
+- This Worker currently returns JSON on success (demo). For production, change
+  src/index.js to fetch() your API after verify, or let the client do that.
+
+- If the app does NOT verify HMAC, lock origin so only Cloudflare can reach it
+  (firewall allowlist Cloudflare IPs, tunnel, etc.), or bad actors could POST
+  directly to origin.
+
+- Rotate signing keys if exposed; update Worker secret and Mailgun after rotation.
+
+================================================================================
+END
+================================================================================

@@ -1,0 +1,12 @@
+{
+  "name": "cf-mailgun-webhook-test",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^3.114.0"
+  }
+}

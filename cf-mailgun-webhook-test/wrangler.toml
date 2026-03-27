@@ -1,0 +1,8 @@
+name = "mailgun-webhook-verify"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Custom host on your Cloudflare zone. Comment out "routes" to use only workers.dev after deploy.
+routes = [
+  { pattern = "mailgun-hook.devmcatech.dpdns.org/*", zone_name = "devmcatech.dpdns.org" },
+]
